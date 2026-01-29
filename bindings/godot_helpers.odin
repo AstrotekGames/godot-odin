@@ -87,43 +87,43 @@ construct_object :: proc(class_name: cstring) -> ObjectPtr {
     return cast(ObjectPtr)gde_interface.classdb_construct_object2(cast(GDExtensionConstStringNamePtr)&cn)
 }
 
-vec2 :: proc(x, y: f32) -> Vector2 {
+Vector2_create :: proc(x, y: f32) -> Vector2 {
     return Vector2{x, y}
 }
 
-vec2i :: proc(x, y: i32) -> Vector2i {
+Vector2i_create :: proc(x, y: i32) -> Vector2i {
     return Vector2i{x, y}
 }
 
-vec3 :: proc(x, y, z: f32) -> Vector3 {
+Vector3_create :: proc(x, y, z: f32) -> Vector3 {
     return Vector3{x, y, z}
 }
 
-vec3i :: proc(x, y, z: i32) -> Vector3i {
+Vector3i_create :: proc(x, y, z: i32) -> Vector3i {
     return Vector3i{x, y, z}
 }
 
-vec4 :: proc(x, y, z, w: f32) -> Vector4 {
+Vector4_create :: proc(x, y, z, w: f32) -> Vector4 {
     return Vector4{x, y, z, w}
 }
 
-vec4i :: proc(x, y, z, w: i32) -> Vector4i {
+Vector4i_create :: proc(x, y, z, w: i32) -> Vector4i {
     return Vector4i{x, y, z, w}
 }
 
-rect2 :: proc(x, y, width, height: f32) -> Rect2 {
+Rect2_create :: proc(x, y, width, height: f32) -> Rect2 {
     return Rect2{position = {x, y}, size = {width, height}}
 }
 
-rect2i :: proc(x, y, width, height: i32) -> Rect2i {
+Rect2i_create :: proc(x, y, width, height: i32) -> Rect2i {
     return Rect2i{position = {x, y}, size = {width, height}}
 }
 
-color :: proc(r, g, b: f32, a: f32 = 1.0) -> Color {
+Color_create :: proc(r, g, b: f32, a: f32 = 1.0) -> Color {
     return Color{r, g, b, a}
 }
 
-color_rgb :: proc(r, g, b: u8, a: u8 = 255) -> Color {
+Color_create_rgb :: proc(r, g, b: u8, a: u8 = 255) -> Color {
     return Color{f32(r) / 255.0, f32(g) / 255.0, f32(b) / 255.0, f32(a) / 255.0}
 }
 

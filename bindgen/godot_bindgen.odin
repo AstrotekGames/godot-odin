@@ -138,6 +138,17 @@ API_ClassConstant :: struct {
     value: i64,
 }
 
+API_EnumValue :: struct {
+    name:  string,
+    value: i64,
+}
+
+API_Enum :: struct {
+    name:        string,
+    is_bitfield: bool,
+    values:      []API_EnumValue,
+}
+
 API_Class :: struct {
     name:           string,
     is_refcounted:  bool,
@@ -145,6 +156,7 @@ API_Class :: struct {
     inherits:       Maybe(string),
     api_type:       string,
     constants:      []API_ClassConstant,
+    enums:          []API_Enum,
     methods:        []API_Method,
 }
 
@@ -157,6 +169,7 @@ Extension_API :: struct {
     header:                        API_Header,
     builtin_class_sizes:           []API_BuildConfig,
     builtin_class_member_offsets:  []API_BuildConfigOffsets,
+    global_enums:                  []API_Enum,
     classes:                       []API_Class,
     singletons:                    []API_Singleton,
 }
@@ -253,13 +266,7 @@ convert_type :: proc(g: ^Generator, c_type: string) -> string {
         return fmt.tprintf("^%s", base_odin)
     }
 
-    if g.handle_types[type_str] || g.enum_types[type_str] {
-        return type_str
-    }
-    if type_str in g.func_types {
-        return type_str
-    }
-    if g.struct_types[type_str] {
+    if g.handle_types[type_str] || g.enum_types[type_str] || g.struct_types[type_str] || type_str in g.func_types {
         return type_str
     }
     if strings.has_prefix(type_str, "GDObject") {
@@ -495,16 +502,123 @@ has_bindable_methods :: proc(cls: ^API_Class) -> bool {
     return false
 }
 
+// Convert SCREAMING_SNAKE to PascalCase: "TOP_LEFT" -> "TopLeft", "STOP" -> "Stop"
+screaming_to_pascal :: proc(name: string) -> string {
+    result := strings.builder_make()
+    parts := strings.split(name, "_")
+    for part in parts {
+        if len(part) == 0 do continue
+        for r, i in part {
+            if i == 0 {
+                strings.write_rune(&result, r)  // already upper
+            } else {
+                strings.write_rune(&result, unicode.to_lower(r))
+            }
+        }
+    }
+    return strings.to_string(result)
+}
+
+// Find the common SCREAMING_SNAKE prefix segments shared by all enum values.
+// Returns the number of underscore-separated segments that are common.
+enum_common_prefix_len :: proc(e: ^API_Enum) -> int {
+    if len(e.values) < 2 do return 0
+
+    first_parts := strings.split(e.values[0].name, "_")
+    prefix_len := 0
+
+    for i in 0..<len(first_parts) {
+        all_match := true
+        for &v in e.values[1:] {
+            v_parts := strings.split(v.name, "_")
+            if i >= len(v_parts) || v_parts[i] != first_parts[i] {
+                all_match = false
+                break
+            }
+        }
+        if all_match {
+            prefix_len = i + 1
+        } else {
+            break
+        }
+    }
+    return prefix_len
+}
+
+// Strip the common prefix segments from an enum value name and convert to PascalCase.
+// Prepends '_' if the result starts with a digit (invalid Odin identifier).
+strip_enum_prefix :: proc(name: string, prefix_seg_count: int) -> string {
+    parts := strings.split(name, "_")
+    start := min(prefix_seg_count, len(parts) - 1)
+    remaining := strings.join(parts[start:], "_")
+    pascal := screaming_to_pascal(remaining)
+
+    if len(pascal) > 0 && pascal[0] >= '0' && pascal[0] <= '9' {
+        return fmt.tprintf("_%s", pascal)
+    }
+    return pascal
+}
+
+// Check if an enum has duplicate values (which prevents using Odin enum)
+enum_has_duplicate_values :: proc(e: ^API_Enum) -> bool {
+    for i in 0..<len(e.values) {
+        for j in (i + 1)..<len(e.values) {
+            if e.values[i].value == e.values[j].value {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+generate_enum_type :: proc(g: ^Generator, e: ^API_Enum, type_name: string) {
+    if e.is_bitfield || enum_has_duplicate_values(e) {
+        // Flat constants
+        writef(g, "%s :: distinct i64\n", type_name)
+        for &v in e.values {
+            writef(g, "%s_%s :: %s(%d)\n", type_name, screaming_to_pascal(v.name), type_name, v.value)
+        }
+    } else {
+        // Proper enum
+        prefix_len := enum_common_prefix_len(e)
+        writef(g, "%s :: enum i64 {{\n", type_name)
+        g.indent += 1
+        for &v in e.values {
+            pascal := strip_enum_prefix(v.name, prefix_len)
+            writef(g, "%s = %d,\n", pascal, v.value)
+        }
+        g.indent -= 1
+        writeln(g, "}")
+    }
+    writeln(g)
+}
+
+generate_global_enums :: proc(g: ^Generator, api: ^Extension_API) {
+    write_section_header(g, "GLOBAL ENUMS")
+
+    for &e in api.global_enums {
+        // Replace dots with underscores (e.g. "Variant.Type" -> "Variant_Type")
+        type_name := e.name
+        if strings.contains(type_name, ".") {
+            type_name, _ = strings.replace_all(type_name, ".", "_")
+        }
+        generate_enum_type(g, &e, type_name)
+    }
+}
+
 generate_class_constants :: proc(g: ^Generator, api: ^Extension_API) {
-    write_section_header(g, "ENGINE CLASS CONSTANTS")
+    write_section_header(g, "ENGINE CLASS CONSTANTS & ENUMS")
 
     for &cls in api.classes {
-        if len(cls.constants) == 0 do continue
+        if len(cls.constants) == 0 && len(cls.enums) == 0 do continue
 
-        class_snake := strings.to_upper(camel_to_snake(cls.name))
         writef(g, "// %s\n", cls.name)
         for &c in cls.constants {
-            writef(g, "%s_%s :: %d\n", class_snake, c.name, c.value)
+            writef(g, "%s_%s :: %d\n", cls.name, screaming_to_pascal(c.name), c.value)
+        }
+        for &e in cls.enums {
+            type_name := fmt.tprintf("%s_%s", cls.name, e.name)
+            generate_enum_type(g, &e, type_name)
         }
         writeln(g)
     }
@@ -522,13 +636,13 @@ generate_class_name_strings :: proc(g: ^Generator, api: ^Extension_API) {
     g.indent -= 1
     writeln(g, "}")
     writeln(g)
-    writeln(g, "names: ClassNameStrings")
+    writeln(g, "types: ClassNameStrings")
     writeln(g)
 
     writeln(g, "init_class_names :: proc() {")
     g.indent += 1
     for &cls in api.classes {
-        writef(g, "names.%s = godot_string_from_cstring(\"%s\")\n", cls.name, cls.name)
+        writef(g, "types.%s = godot_string_from_cstring(\"%s\")\n", cls.name, cls.name)
     }
     g.indent -= 1
     writeln(g, "}")
@@ -536,10 +650,7 @@ generate_class_name_strings :: proc(g: ^Generator, api: ^Extension_API) {
 }
 
 generate_method_binds_struct :: proc(g: ^Generator, api: ^Extension_API) {
-    writeln(g, "// =============================================================================")
-    writeln(g, "// METHOD BINDS (cached at init_scene)")
-    writeln(g, "// =============================================================================")
-    writeln(g)
+    write_section_header(g, "METHOD BINDS (cached at init_scene)")
     writeln(g, "@(private)")
     writeln(g, "MethodBinds :: struct {")
     g.indent += 1
@@ -547,12 +658,11 @@ generate_method_binds_struct :: proc(g: ^Generator, api: ^Extension_API) {
     for &cls in api.classes {
         if !has_bindable_methods(&cls) do continue
 
-        class_snake := camel_to_snake(cls.name)
         writef(g, "// %s\n", cls.name)
 
         for &m in cls.methods {
             if !is_bindable_method(&m) do continue
-            writef(g, "%s_%s: MethodBindPtr,\n", class_snake, m.name)
+            writef(g, "%s_%s: MethodBindPtr,\n", cls.name, m.name)
         }
     }
 
@@ -571,11 +681,10 @@ generate_init_scene :: proc(g: ^Generator, api: ^Extension_API) {
     for &cls in api.classes {
         if !has_bindable_methods(&cls) do continue
 
-        class_snake := camel_to_snake(cls.name)
         for &m in cls.methods {
             if !is_bindable_method(&m) do continue
             writef(g, "method_binds.%s_%s = get_method_bind(\"%s\", \"%s\", %d)\n",
-                   class_snake, m.name, cls.name, m.name, m.hash)
+                   cls.name, m.name, cls.name, m.name, m.hash)
         }
     }
 
@@ -595,21 +704,17 @@ generate_init_bindings :: proc(g: ^Generator) {
 }
 
 generate_method_wrappers :: proc(g: ^Generator, api: ^Extension_API) {
-    writeln(g, "// =============================================================================")
-    writeln(g, "// ENGINE CLASS METHOD WRAPPERS")
-    writeln(g, "// =============================================================================")
-    writeln(g)
+    write_section_header(g, "ENGINE CLASS METHOD WRAPPERS")
 
     for &cls in api.classes {
         if !has_bindable_methods(&cls) do continue
 
-        class_snake := camel_to_snake(cls.name)
         is_singleton := g.singleton_set[cls.name]
         writef(g, "// %s\n", cls.name)
 
         for &m in cls.methods {
             if !is_bindable_method(&m) do continue
-            generate_method_wrapper(g, &cls, &m, class_snake, is_singleton)
+            generate_method_wrapper(g, &cls, &m, is_singleton)
         }
         writeln(g)
     }
@@ -638,8 +743,8 @@ get_return_type_with_meta :: proc(g: ^Generator, return_value: Maybe(API_MethodR
     return ""
 }
 
-generate_method_wrapper :: proc(g: ^Generator, cls: ^API_Class, m: ^API_Method, class_snake: string, is_singleton: bool) {
-    method_name := fmt.tprintf("%s_%s", class_snake, m.name)
+generate_method_wrapper :: proc(g: ^Generator, cls: ^API_Class, m: ^API_Method, is_singleton: bool) {
+    method_name := fmt.tprintf("%s_%s", cls.name, m.name)
 
     args := strings.builder_make()
     if !m.is_static && !is_singleton {
@@ -939,6 +1044,7 @@ generate_bindings :: proc(iface: ^GDExtension_Interface, api: ^Extension_API) ->
     writeln(&g, "}")
     writeln(&g)
 
+    generate_global_enums(&g, api)
     generate_class_constants(&g, api)
     generate_class_name_strings(&g, api)
     generate_method_binds_struct(&g, api)
