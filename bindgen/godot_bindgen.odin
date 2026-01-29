@@ -134,8 +134,9 @@ API_Method :: struct {
 }
 
 API_BuiltinMethodArg :: struct {
-    name: string,
-    type: string,
+    name:          string,
+    type:          string,
+    default_value: Maybe(string),
 }
 
 API_BuiltinMethod :: struct {
@@ -306,6 +307,25 @@ init_type_map :: proc(g: ^Generator) {
     g.type_map["Array"] = "Array"
     g.type_map["Dictionary"] = "Dictionary"
     g.type_map["Variant"] = "Variant"
+    g.type_map["Callable"] = "Callable"
+    g.type_map["Signal"] = "Signal"
+    g.type_map["AABB"] = "AABB"
+    g.type_map["Basis"] = "Basis"
+    g.type_map["Quaternion"] = "Quaternion"
+    g.type_map["Transform2D"] = "Transform2D"
+    g.type_map["Transform3D"] = "Transform3D"
+    g.type_map["Plane"] = "Plane"
+    g.type_map["Projection"] = "Projection"
+    g.type_map["PackedByteArray"] = "PackedByteArray"
+    g.type_map["PackedInt32Array"] = "PackedInt32Array"
+    g.type_map["PackedInt64Array"] = "PackedInt64Array"
+    g.type_map["PackedFloat32Array"] = "PackedFloat32Array"
+    g.type_map["PackedFloat64Array"] = "PackedFloat64Array"
+    g.type_map["PackedStringArray"] = "PackedStringArray"
+    g.type_map["PackedVector2Array"] = "PackedVector2Array"
+    g.type_map["PackedVector3Array"] = "PackedVector3Array"
+    g.type_map["PackedColorArray"] = "PackedColorArray"
+    g.type_map["PackedVector4Array"] = "PackedVector4Array"
 }
 
 convert_type :: proc(g: ^Generator, c_type: string) -> string {
@@ -401,6 +421,134 @@ is_pass_by_value_type :: proc(type_name: string) -> bool {
         }
     }
     return strings.has_prefix(type_name, "^")
+}
+
+// Default Value Conversion (Godot JSON -> Odin literal)
+// is_builtin controls bool wire type: builtin methods use u8 (0/1), class methods use bool (true/false).
+
+split_csv :: proc(csv: string) -> [dynamic]string {
+    parts: [dynamic]string
+    rest := csv
+    for len(rest) > 0 {
+        if comma := strings.index_byte(rest, ','); comma >= 0 {
+            append(&parts, strings.trim_space(rest[:comma]))
+            rest = rest[comma+1:]
+        } else {
+            append(&parts, strings.trim_space(rest))
+            break
+        }
+    }
+    return parts
+}
+
+// Groups CSV values into brace-wrapped sub-groups of specified sizes.
+// e.g. regroup_csv("0, 0, 0, 0", {2, 2}) -> "{0, 0}, {0, 0}"
+regroup_csv :: proc(csv: string, group_sizes: []int) -> string {
+    parts := split_csv(csv)
+    result := strings.builder_make()
+    idx := 0
+    for gs, gi in group_sizes {
+        if gi > 0 { strings.write_string(&result, ", ") }
+        if gs > 1 { strings.write_byte(&result, '{') }
+        for j in 0..<gs {
+            if j > 0 { strings.write_string(&result, ", ") }
+            if idx < len(parts) {
+                strings.write_string(&result, parts[idx])
+                idx += 1
+            }
+        }
+        if gs > 1 { strings.write_byte(&result, '}') }
+    }
+    return strings.to_string(result)
+}
+
+// Transform3D = Basis{{Vec3, Vec3, Vec3}} + origin Vec3 -> {{3,3,3}, 3}
+regroup_transform3d :: proc(csv: string) -> string {
+    parts := split_csv(csv)
+    basis_csv := strings.join(parts[:min(9, len(parts))], ", ")
+    origin_csv := strings.join(parts[min(9, len(parts)):min(12, len(parts))], ", ")
+    return fmt.tprintf("{{%s}}, {{%s}}", regroup_csv(basis_csv, []int{3, 3, 3}), origin_csv)
+}
+
+convert_default_value :: proc(godot_default: string, odin_type: string, is_builtin: bool) -> Maybe(string) {
+    dv := godot_default
+
+    // Variant is an opaque type — defaults require construction, skip
+    if odin_type == "Variant" { return nil }
+
+    // Booleans
+    if dv == "true"  { return "1" if is_builtin else "true" }
+    if dv == "false" { return "0" if is_builtin else "false" }
+
+    // null -> nil for pointers, zero-value for structs
+    if dv == "null" {
+        if odin_type == "ObjectPtr" || strings.has_prefix(odin_type, "^") {
+            return "nil"
+        }
+        return fmt.tprintf("%s{{}}", odin_type)
+    }
+
+    // Numeric literals (ints, floats, negative signs, scientific notation) — pass through
+    if len(dv) > 0 && (dv[0] == '-' || dv[0] >= '0' && dv[0] <= '9') {
+        return dv
+    }
+
+    // Empty string / empty StringName / empty NodePath -> zero-value struct
+    if dv == "\"\"" && (odin_type == "GodotString" || odin_type == "String") {
+        return "GodotString{}"
+    }
+    if dv == "&\"\"" {
+        return "StringName{}"
+    }
+    if dv == "NodePath(\"\")" {
+        return "NodePath{}"
+    }
+
+    // Non-empty strings/StringNames require allocation — skip default
+    if dv[0] == '"' || strings.has_prefix(dv, "&\"") {
+        return nil
+    }
+
+    // Zero-value constructors: Callable(), RID(), PackedByteArray(), etc.
+    if strings.has_suffix(dv, "()") {
+        name := dv[:len(dv)-2]
+        if name == "String" { name = "GodotString" }
+        return fmt.tprintf("%s{{}}", name)
+    }
+
+    // Empty array/dict literals
+    if dv == "[]" { return "Array{}" }
+    if dv == "{}" { return "Dictionary{}" }
+
+    // Typed arrays: Array[RID]([]) etc. -> Array{}
+    if strings.has_prefix(dv, "Array[") {
+        return "Array{}"
+    }
+
+    // Struct constructors: Vector2(0, 0) -> Vector2{0, 0}
+    // Composite structs regroup flat CSV values into nested brace groups.
+    if paren := strings.index_byte(dv, '('); paren >= 0 && strings.has_suffix(dv, ")") {
+        type_name := dv[:paren]
+        inner := dv[paren+1:len(dv)-1]
+        odin_name := type_name
+        if type_name == "String" { odin_name = "GodotString" }
+
+        grouped: string
+        switch type_name {
+        case "Rect2", "Rect2i": grouped = regroup_csv(inner, []int{2, 2})
+        case "AABB":            grouped = regroup_csv(inner, []int{3, 3})
+        case "Transform2D":     grouped = regroup_csv(inner, []int{2, 2, 2})
+        case "Basis":           grouped = regroup_csv(inner, []int{3, 3, 3})
+        case "Transform3D":     grouped = regroup_transform3d(inner)
+        case "Projection":      grouped = regroup_csv(inner, []int{4, 4, 4, 4})
+        case "Plane":           grouped = regroup_csv(inner, []int{3, 1})
+        case:                   grouped = inner
+        }
+
+        return fmt.tprintf("%s{{%s}}", odin_name, grouped)
+    }
+
+    return nil
 }
 
 // Code Writing Helpers
@@ -827,6 +975,12 @@ generate_method_wrapper :: proc(g: ^Generator, cls: ^API_Class, m: ^API_Method, 
         }
         arg_type := get_arg_type_with_meta(g, arg)
         safe_name := sanitize_identifier(arg.name)
+        if dv_str, has_dv := arg.default_value.?; has_dv {
+            if odin_dv, ok := convert_default_value(dv_str, arg_type, false).?; ok {
+                strings.write_string(&args, fmt.tprintf("%s: %s = %s", safe_name, arg_type, odin_dv))
+                continue
+            }
+        }
         strings.write_string(&args, fmt.tprintf("%s: %s", safe_name, arg_type))
     }
 
@@ -1127,6 +1281,12 @@ generate_builtin_method_wrapper :: proc(g: ^Generator, cls: ^API_BuiltinClass, m
         }
         arg_type := convert_builtin_type(g, arg.type)
         safe_name := sanitize_identifier(arg.name)
+        if dv_str, has_dv := arg.default_value.?; has_dv {
+            if odin_dv, ok := convert_default_value(dv_str, arg_type, true).?; ok {
+                strings.write_string(&args, fmt.tprintf("%s: %s = %s", safe_name, arg_type, odin_dv))
+                continue
+            }
+        }
         strings.write_string(&args, fmt.tprintf("%s: %s", safe_name, arg_type))
     }
 
@@ -1715,19 +1875,16 @@ generate_vararg_utility_wrappers :: proc(g: ^Generator, api: ^Extension_API) {
 emit_variant_conversion :: proc(g: ^Generator, index: int, arg_type: string, safe_name: string) {
     switch arg_type {
     case "int":
-        writef(g, "fixed_%d := Variant_from_int(cast(i64)%s)\n", index, safe_name)
-    case "StringName":
-        writef(g, "fixed_%d := Variant_from_string_name(%s)\n", index, safe_name)
-    case "String":
-        writef(g, "fixed_%d := Variant_from_string(%s)\n", index, safe_name)
-    case "bool":
-        writef(g, "fixed_%d := Variant_from_bool(%s)\n", index, safe_name)
+        writef(g, "fixed_%d := Variant_from(cast(i64)%s)\n", index, safe_name)
     case "float":
-        writef(g, "fixed_%d := Variant_from_float(cast(f64)%s)\n", index, safe_name)
-    case "Object":
-        writef(g, "fixed_%d := Variant_from_object(%s)\n", index, safe_name)
+        writef(g, "fixed_%d := Variant_from(cast(f64)%s)\n", index, safe_name)
     case:
-        writef(g, "fixed_%d := Variant_from_int(cast(i64)%s)\n", index, safe_name)
+        // StringName, String, bool, Object, enums — all dispatch through Variant_from's when chain
+        if strings.has_prefix(arg_type, "enum::") || strings.has_prefix(arg_type, "bitfield::") {
+            writef(g, "fixed_%d := Variant_from(cast(i64)%s)\n", index, safe_name)
+        } else {
+            writef(g, "fixed_%d := Variant_from(%s)\n", index, safe_name)
+        }
     }
 }
 
@@ -1823,7 +1980,7 @@ generate_vararg_class_method_wrappers :: proc(g: ^Generator, api: ^Extension_API
                        cls.name, m.name, obj_ref)
                 if is_enum_return {
                     writeln(g, "defer Variant_destroy(&ret_var)")
-                    writeln(g, "return Variant_to_int(&ret_var)")
+                    writeln(g, "return Variant_to(i64, &ret_var)")
                 } else {
                     writeln(g, "return ret_var")
                 }

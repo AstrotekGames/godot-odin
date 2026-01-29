@@ -226,53 +226,85 @@ Variant_from_type_ptr :: proc(type_index: GDExtensionVariantType, ptr: rawptr) -
     return v
 }
 
-Variant_from_int :: proc(val: i64) -> Variant {
-    tmp := val
-    return Variant_from_type_ptr(.VARIANT_TYPE_INT, &tmp)
+Variant_from :: proc(val: $T) -> Variant {
+    when T == bool {
+        tmp: u8 = 1 if val else 0
+        return Variant_from_type_ptr(.VARIANT_TYPE_BOOL, &tmp)
+    } else {
+        vtype: GDExtensionVariantType
+        when T == i64            { vtype = .VARIANT_TYPE_INT }
+        else when T == f64       { vtype = .VARIANT_TYPE_FLOAT }
+        else when T == GodotString { vtype = .VARIANT_TYPE_STRING }
+        else when T == StringName { vtype = .VARIANT_TYPE_STRING_NAME }
+        else when T == ObjectPtr { vtype = .VARIANT_TYPE_OBJECT }
+        else when T == Vector2   { vtype = .VARIANT_TYPE_VECTOR2 }
+        else when T == Vector2i  { vtype = .VARIANT_TYPE_VECTOR2I }
+        else when T == Vector3   { vtype = .VARIANT_TYPE_VECTOR3 }
+        else when T == Vector3i  { vtype = .VARIANT_TYPE_VECTOR3I }
+        else when T == Vector4   { vtype = .VARIANT_TYPE_VECTOR4 }
+        else when T == Vector4i  { vtype = .VARIANT_TYPE_VECTOR4I }
+        else when T == Color     { vtype = .VARIANT_TYPE_COLOR }
+        else when T == Rect2     { vtype = .VARIANT_TYPE_RECT2 }
+        else when T == Rect2i    { vtype = .VARIANT_TYPE_RECT2I }
+        else when T == Transform2D { vtype = .VARIANT_TYPE_TRANSFORM2D }
+        else when T == Transform3D { vtype = .VARIANT_TYPE_TRANSFORM3D }
+        else when T == Basis     { vtype = .VARIANT_TYPE_BASIS }
+        else when T == Quaternion { vtype = .VARIANT_TYPE_QUATERNION }
+        else when T == AABB      { vtype = .VARIANT_TYPE_AABB }
+        else when T == Plane     { vtype = .VARIANT_TYPE_PLANE }
+        else when T == Projection { vtype = .VARIANT_TYPE_PROJECTION }
+        else when T == Callable  { vtype = .VARIANT_TYPE_CALLABLE }
+        else when T == Signal    { vtype = .VARIANT_TYPE_SIGNAL }
+        else when T == Array     { vtype = .VARIANT_TYPE_ARRAY }
+        else when T == Dictionary { vtype = .VARIANT_TYPE_DICTIONARY }
+        else when T == NodePath  { vtype = .VARIANT_TYPE_NODE_PATH }
+        else when T == RID       { vtype = .VARIANT_TYPE_RID }
+        else { #panic("Variant_from: unsupported type") }
+
+        tmp := val
+        return Variant_from_type_ptr(vtype, &tmp)
+    }
 }
 
-Variant_from_float :: proc(val: f64) -> Variant {
-    tmp := val
-    return Variant_from_type_ptr(.VARIANT_TYPE_FLOAT, &tmp)
-}
+Variant_to :: proc($T: typeid, v: ^Variant) -> T {
+    when T == bool {
+        ret: u8
+        variant_to_type[GDExtensionVariantType.VARIANT_TYPE_BOOL](cast(GDExtensionUninitializedTypePtr)&ret, cast(GDExtensionVariantPtr)v)
+        return ret != 0
+    } else {
+        vtype: GDExtensionVariantType
+        when T == i64            { vtype = .VARIANT_TYPE_INT }
+        else when T == f64       { vtype = .VARIANT_TYPE_FLOAT }
+        else when T == GodotString { vtype = .VARIANT_TYPE_STRING }
+        else when T == StringName { vtype = .VARIANT_TYPE_STRING_NAME }
+        else when T == Vector2   { vtype = .VARIANT_TYPE_VECTOR2 }
+        else when T == Vector2i  { vtype = .VARIANT_TYPE_VECTOR2I }
+        else when T == Vector3   { vtype = .VARIANT_TYPE_VECTOR3 }
+        else when T == Vector3i  { vtype = .VARIANT_TYPE_VECTOR3I }
+        else when T == Vector4   { vtype = .VARIANT_TYPE_VECTOR4 }
+        else when T == Vector4i  { vtype = .VARIANT_TYPE_VECTOR4I }
+        else when T == Color     { vtype = .VARIANT_TYPE_COLOR }
+        else when T == Rect2     { vtype = .VARIANT_TYPE_RECT2 }
+        else when T == Rect2i    { vtype = .VARIANT_TYPE_RECT2I }
+        else when T == Transform2D { vtype = .VARIANT_TYPE_TRANSFORM2D }
+        else when T == Transform3D { vtype = .VARIANT_TYPE_TRANSFORM3D }
+        else when T == Basis     { vtype = .VARIANT_TYPE_BASIS }
+        else when T == Quaternion { vtype = .VARIANT_TYPE_QUATERNION }
+        else when T == AABB      { vtype = .VARIANT_TYPE_AABB }
+        else when T == Plane     { vtype = .VARIANT_TYPE_PLANE }
+        else when T == Projection { vtype = .VARIANT_TYPE_PROJECTION }
+        else when T == Callable  { vtype = .VARIANT_TYPE_CALLABLE }
+        else when T == Signal    { vtype = .VARIANT_TYPE_SIGNAL }
+        else when T == Array     { vtype = .VARIANT_TYPE_ARRAY }
+        else when T == Dictionary { vtype = .VARIANT_TYPE_DICTIONARY }
+        else when T == NodePath  { vtype = .VARIANT_TYPE_NODE_PATH }
+        else when T == RID       { vtype = .VARIANT_TYPE_RID }
+        else { #panic("Variant_to: unsupported type") }
 
-Variant_from_bool :: proc(val: bool) -> Variant {
-    tmp: u8 = 1 if val else 0
-    return Variant_from_type_ptr(.VARIANT_TYPE_BOOL, &tmp)
-}
-
-Variant_from_string :: proc(val: GodotString) -> Variant {
-    tmp := val
-    return Variant_from_type_ptr(.VARIANT_TYPE_STRING, &tmp)
-}
-
-Variant_from_string_name :: proc(val: StringName) -> Variant {
-    tmp := val
-    return Variant_from_type_ptr(.VARIANT_TYPE_STRING_NAME, &tmp)
-}
-
-Variant_from_object :: proc(obj: ObjectPtr) -> Variant {
-    tmp := obj
-    return Variant_from_type_ptr(.VARIANT_TYPE_OBJECT, &tmp)
-}
-
-@(private = "file")
-variant_to :: proc($T: typeid, type_index: GDExtensionVariantType, v: ^Variant) -> T {
-    ret: T
-    variant_to_type[type_index](cast(GDExtensionUninitializedTypePtr)&ret, cast(GDExtensionVariantPtr)v)
-    return ret
-}
-
-Variant_to_int :: proc(v: ^Variant) -> i64 {
-    return variant_to(i64, .VARIANT_TYPE_INT, v)
-}
-
-Variant_to_float :: proc(v: ^Variant) -> f64 {
-    return variant_to(f64, .VARIANT_TYPE_FLOAT, v)
-}
-
-Variant_to_bool :: proc(v: ^Variant) -> bool {
-    return variant_to(u8, .VARIANT_TYPE_BOOL, v) != 0
+        ret: T
+        variant_to_type[vtype](cast(GDExtensionUninitializedTypePtr)&ret, cast(GDExtensionVariantPtr)v)
+        return ret
+    }
 }
 
 Variant_destroy :: proc(v: ^Variant) {

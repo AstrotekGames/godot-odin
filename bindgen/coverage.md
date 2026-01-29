@@ -22,7 +22,17 @@ classes.signals                      | ~489   | ClassName_Signal_Name cstring co
 singletons                           | all    | singleton dispatch
 utility_functions (non-vararg)       | ~102   | sin lerp clamp abs randf randi etc
 utility_functions (vararg)           | 12     | godot_print godot_str godot_max etc
+default_parameters                   | 1717   | 96% of 1785; numeric/bool/null/struct/zero-value
 ```
+
+## Notes
+
+- 68 defaults can't be emitted as Odin default params because they need
+  heap allocation (non-empty string literals like `"Alert!"`, `&"Master"`, etc.)
+  or are Variant-typed args. Not worth the complexity.
+- Generated code does zero heap allocs -- vararg wrappers use stack arrays.
+- `Variant_from`/`Variant_to` are generic, 27 types via compile-time `when`.
+  `Variant_from_type_ptr` exists as escape hatch for the raw variant type enum.
 
 ## Skipped
 
