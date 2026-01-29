@@ -510,6 +510,31 @@ generate_class_constants :: proc(g: ^Generator, api: ^Extension_API) {
     }
 }
 
+generate_class_name_strings :: proc(g: ^Generator, api: ^Extension_API) {
+    write_section_header(g, "CLASS NAME STRINGS (cached at init_class_names)")
+
+    writeln(g, "@(private)")
+    writeln(g, "ClassNameStrings :: struct {")
+    g.indent += 1
+    for &cls in api.classes {
+        writef(g, "%s: GodotString,\n", cls.name)
+    }
+    g.indent -= 1
+    writeln(g, "}")
+    writeln(g)
+    writeln(g, "names: ClassNameStrings")
+    writeln(g)
+
+    writeln(g, "init_class_names :: proc() {")
+    g.indent += 1
+    for &cls in api.classes {
+        writef(g, "names.%s = godot_string_from_cstring(\"%s\")\n", cls.name, cls.name)
+    }
+    g.indent -= 1
+    writeln(g, "}")
+    writeln(g)
+}
+
 generate_method_binds_struct :: proc(g: ^Generator, api: ^Extension_API) {
     writeln(g, "// =============================================================================")
     writeln(g, "// METHOD BINDS (cached at init_scene)")
@@ -554,6 +579,16 @@ generate_init_scene :: proc(g: ^Generator, api: ^Extension_API) {
         }
     }
 
+    g.indent -= 1
+    writeln(g, "}")
+    writeln(g)
+}
+
+generate_init_bindings :: proc(g: ^Generator) {
+    writeln(g, "init_scene_bindings :: proc() {")
+    g.indent += 1
+    writeln(g, "init_scene()")
+    writeln(g, "init_class_names()")
     g.indent -= 1
     writeln(g, "}")
     writeln(g)
@@ -905,8 +940,10 @@ generate_bindings :: proc(iface: ^GDExtension_Interface, api: ^Extension_API) ->
     writeln(&g)
 
     generate_class_constants(&g, api)
+    generate_class_name_strings(&g, api)
     generate_method_binds_struct(&g, api)
     generate_init_scene(&g, api)
+    generate_init_bindings(&g)
     generate_method_wrappers(&g, api)
 
     return strings.to_string(g.output)

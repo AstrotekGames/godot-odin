@@ -2,26 +2,45 @@ package godot
 
 import "core:c"
 
+// String lifecycle
+
+@(private = "file")
+cached_string_dtor: GDExtensionPtrDestructor = nil
+@(private = "file")
+cached_string_name_dtor: GDExtensionPtrDestructor = nil
+
 string_name_from_cstring :: proc(s: cstring) -> StringName {
     sn: StringName
-    if gde_interface.string_name_new_with_utf8_chars != nil {
-        gde_interface.string_name_new_with_utf8_chars(cast(GDExtensionUninitializedStringNamePtr)&sn, s)
-    }
+    assert(gde_interface.string_name_new_with_utf8_chars != nil, "[godot] string_name_new_with_utf8_chars not loaded")
+    gde_interface.string_name_new_with_utf8_chars(cast(GDExtensionUninitializedStringNamePtr)&sn, s)
     return sn
 }
 
 godot_string_from_cstring :: proc(s: cstring) -> GodotString {
     gs: GodotString
-    if gde_interface.string_new_with_utf8_chars != nil {
-        gde_interface.string_new_with_utf8_chars(cast(GDExtensionUninitializedStringPtr)&gs, s)
-    }
+    assert(gde_interface.string_new_with_utf8_chars != nil, "[godot] string_new_with_utf8_chars not loaded")
+    gde_interface.string_new_with_utf8_chars(cast(GDExtensionUninitializedStringPtr)&gs, s)
     return gs
 }
 
-godot_string_to_odin :: proc(gs: ^GodotString, buf: []u8) -> string {
-    if gde_interface.string_to_utf8_chars == nil {
-        return ""
+destroy_string :: proc(s: ^GodotString) {
+    if cached_string_dtor == nil {
+        cached_string_dtor = gde_interface.variant_get_ptr_destructor(.VARIANT_TYPE_STRING)
     }
+    assert(cached_string_dtor != nil, "[godot] String destructor not available")
+    cached_string_dtor(cast(GDExtensionTypePtr)s)
+}
+
+destroy_string_name :: proc(s: ^StringName) {
+    if cached_string_name_dtor == nil {
+        cached_string_name_dtor = gde_interface.variant_get_ptr_destructor(.VARIANT_TYPE_STRING_NAME)
+    }
+    assert(cached_string_name_dtor != nil, "[godot] StringName destructor not available")
+    cached_string_name_dtor(cast(GDExtensionTypePtr)s)
+}
+
+godot_string_to_odin :: proc(gs: ^GodotString, buf: []u8) -> string {
+    assert(gde_interface.string_to_utf8_chars != nil, "[godot] string_to_utf8_chars not loaded")
     n := gde_interface.string_to_utf8_chars(cast(GDExtensionConstStringPtr)gs, cast(cstring)raw_data(buf), i64(len(buf)))
     if n <= 0 {
         return ""
@@ -29,20 +48,21 @@ godot_string_to_odin :: proc(gs: ^GodotString, buf: []u8) -> string {
     return string(buf[:n])
 }
 
+// Engine queries
+
 get_singleton :: proc(name: cstring) -> ObjectPtr {
     sn := string_name_from_cstring(name)
-    if gde_interface.global_get_singleton == nil {
-        return nil
-    }
+    defer destroy_string_name(&sn)
+    assert(gde_interface.global_get_singleton != nil, "[godot] global_get_singleton not loaded")
     return gde_interface.global_get_singleton(cast(GDExtensionConstStringNamePtr)&sn)
 }
 
 get_method_bind :: proc(class_name, method_name: cstring, hash: i64 = 0) -> MethodBindPtr {
     cn := string_name_from_cstring(class_name)
+    defer destroy_string_name(&cn)
     mn := string_name_from_cstring(method_name)
-    if gde_interface.classdb_get_method_bind == nil {
-        return nil
-    }
+    defer destroy_string_name(&mn)
+    assert(gde_interface.classdb_get_method_bind != nil, "[godot] classdb_get_method_bind not loaded")
     return cast(MethodBindPtr)gde_interface.classdb_get_method_bind(
         cast(GDExtensionConstStringNamePtr)&cn,
         cast(GDExtensionConstStringNamePtr)&mn,
@@ -51,9 +71,7 @@ get_method_bind :: proc(class_name, method_name: cstring, hash: i64 = 0) -> Meth
 }
 
 ptrcall :: proc(method: MethodBindPtr, obj: ObjectPtr, args: [^]ConstTypePtr, ret: TypePtr) {
-    if gde_interface.object_method_bind_ptrcall == nil {
-        return
-    }
+    assert(gde_interface.object_method_bind_ptrcall != nil, "[godot] object_method_bind_ptrcall not loaded")
     gde_interface.object_method_bind_ptrcall(
         cast(GDExtensionMethodBindPtr)method,
         cast(GDExtensionObjectPtr)obj,
@@ -64,9 +82,8 @@ ptrcall :: proc(method: MethodBindPtr, obj: ObjectPtr, args: [^]ConstTypePtr, re
 
 construct_object :: proc(class_name: cstring) -> ObjectPtr {
     cn := string_name_from_cstring(class_name)
-    if gde_interface.classdb_construct_object2 == nil {
-        return nil
-    }
+    defer destroy_string_name(&cn)
+    assert(gde_interface.classdb_construct_object2 != nil, "[godot] classdb_construct_object2 not loaded")
     return cast(ObjectPtr)gde_interface.classdb_construct_object2(cast(GDExtensionConstStringNamePtr)&cn)
 }
 
@@ -151,18 +168,14 @@ instance_destroy :: proc(instance: ^Instance) {
 }
 
 instance_start :: proc(instance: ^Instance) -> bool {
-    if instance_method_start == nil {
-        return false
-    }
+    assert(instance_method_start != nil, "[godot] GodotInstance.start method not bound (was init_core called?)")
     ret: u8 = 0
     ptrcall(instance_method_start, instance.ptr, nil, cast(TypePtr)&ret)
     return ret != 0
 }
 
 instance_iteration :: proc(instance: ^Instance) -> bool {
-    if instance_method_iteration == nil {
-        return false
-    }
+    assert(instance_method_iteration != nil, "[godot] GodotInstance.iteration method not bound (was init_core called?)")
     ret: u8 = 0
     ptrcall(instance_method_iteration, instance.ptr, nil, cast(TypePtr)&ret)
     return ret != 0
@@ -177,24 +190,25 @@ set_class_library :: proc(lib: ClassLibraryPtr) {
 
 register_class :: proc(class_name, parent_name: cstring, info: ^GDExtensionClassCreationInfo4) {
     cn := string_name_from_cstring(class_name)
+    defer destroy_string_name(&cn)
     pn := string_name_from_cstring(parent_name)
-    if gde_interface.classdb_register_extension_class5 != nil {
-        gde_interface.classdb_register_extension_class5(
-            class_library,
-            cast(GDExtensionConstStringNamePtr)&cn,
-            cast(GDExtensionConstStringNamePtr)&pn,
-            info,
-        )
-    }
+    defer destroy_string_name(&pn)
+    assert(gde_interface.classdb_register_extension_class5 != nil, "[godot] classdb_register_extension_class5 not loaded")
+    gde_interface.classdb_register_extension_class5(
+        class_library,
+        cast(GDExtensionConstStringNamePtr)&cn,
+        cast(GDExtensionConstStringNamePtr)&pn,
+        info,
+    )
 }
 
 object_set_instance :: proc(obj: ObjectPtr, class_name: cstring, instance: rawptr) {
     cn := string_name_from_cstring(class_name)
-    if gde_interface.object_set_instance != nil {
-        gde_interface.object_set_instance(
-            cast(GDExtensionObjectPtr)obj,
-            cast(GDExtensionConstStringNamePtr)&cn,
-            cast(GDExtensionClassInstancePtr)instance,
-        )
-    }
+    defer destroy_string_name(&cn)
+    assert(gde_interface.object_set_instance != nil, "[godot] object_set_instance not loaded")
+    gde_interface.object_set_instance(
+        cast(GDExtensionObjectPtr)obj,
+        cast(GDExtensionConstStringNamePtr)&cn,
+        cast(GDExtensionClassInstancePtr)instance,
+    )
 }
