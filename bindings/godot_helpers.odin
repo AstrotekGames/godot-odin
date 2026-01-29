@@ -1,0 +1,200 @@
+package godot
+
+import "core:c"
+
+string_name_from_cstring :: proc(s: cstring) -> StringName {
+    sn: StringName
+    if gde_interface.string_name_new_with_utf8_chars != nil {
+        gde_interface.string_name_new_with_utf8_chars(cast(GDExtensionUninitializedStringNamePtr)&sn, s)
+    }
+    return sn
+}
+
+godot_string_from_cstring :: proc(s: cstring) -> GodotString {
+    gs: GodotString
+    if gde_interface.string_new_with_utf8_chars != nil {
+        gde_interface.string_new_with_utf8_chars(cast(GDExtensionUninitializedStringPtr)&gs, s)
+    }
+    return gs
+}
+
+godot_string_to_odin :: proc(gs: ^GodotString, buf: []u8) -> string {
+    if gde_interface.string_to_utf8_chars == nil {
+        return ""
+    }
+    n := gde_interface.string_to_utf8_chars(cast(GDExtensionConstStringPtr)gs, cast(cstring)raw_data(buf), i64(len(buf)))
+    if n <= 0 {
+        return ""
+    }
+    return string(buf[:n])
+}
+
+get_singleton :: proc(name: cstring) -> ObjectPtr {
+    sn := string_name_from_cstring(name)
+    if gde_interface.global_get_singleton == nil {
+        return nil
+    }
+    return gde_interface.global_get_singleton(cast(GDExtensionConstStringNamePtr)&sn)
+}
+
+get_method_bind :: proc(class_name, method_name: cstring, hash: i64 = 0) -> MethodBindPtr {
+    cn := string_name_from_cstring(class_name)
+    mn := string_name_from_cstring(method_name)
+    if gde_interface.classdb_get_method_bind == nil {
+        return nil
+    }
+    return cast(MethodBindPtr)gde_interface.classdb_get_method_bind(
+        cast(GDExtensionConstStringNamePtr)&cn,
+        cast(GDExtensionConstStringNamePtr)&mn,
+        hash,
+    )
+}
+
+ptrcall :: proc(method: MethodBindPtr, obj: ObjectPtr, args: [^]ConstTypePtr, ret: TypePtr) {
+    if gde_interface.object_method_bind_ptrcall == nil {
+        return
+    }
+    gde_interface.object_method_bind_ptrcall(
+        cast(GDExtensionMethodBindPtr)method,
+        cast(GDExtensionObjectPtr)obj,
+        cast([^]GDExtensionConstTypePtr)args,
+        cast(GDExtensionTypePtr)ret,
+    )
+}
+
+construct_object :: proc(class_name: cstring) -> ObjectPtr {
+    cn := string_name_from_cstring(class_name)
+    if gde_interface.classdb_construct_object2 == nil {
+        return nil
+    }
+    return cast(ObjectPtr)gde_interface.classdb_construct_object2(cast(GDExtensionConstStringNamePtr)&cn)
+}
+
+vec2 :: proc(x, y: f32) -> Vector2 {
+    return Vector2{x, y}
+}
+
+vec2i :: proc(x, y: i32) -> Vector2i {
+    return Vector2i{x, y}
+}
+
+vec3 :: proc(x, y, z: f32) -> Vector3 {
+    return Vector3{x, y, z}
+}
+
+vec3i :: proc(x, y, z: i32) -> Vector3i {
+    return Vector3i{x, y, z}
+}
+
+vec4 :: proc(x, y, z, w: f32) -> Vector4 {
+    return Vector4{x, y, z, w}
+}
+
+vec4i :: proc(x, y, z, w: i32) -> Vector4i {
+    return Vector4i{x, y, z, w}
+}
+
+rect2 :: proc(x, y, width, height: f32) -> Rect2 {
+    return Rect2{position = {x, y}, size = {width, height}}
+}
+
+rect2i :: proc(x, y, width, height: i32) -> Rect2i {
+    return Rect2i{position = {x, y}, size = {width, height}}
+}
+
+color :: proc(r, g, b: f32, a: f32 = 1.0) -> Color {
+    return Color{r, g, b, a}
+}
+
+color_rgb :: proc(r, g, b: u8, a: u8 = 255) -> Color {
+    return Color{f32(r) / 255.0, f32(g) / 255.0, f32(b) / 255.0, f32(a) / 255.0}
+}
+
+COLOR_WHITE :: Color{1, 1, 1, 1}
+COLOR_BLACK :: Color{0, 0, 0, 1}
+COLOR_RED :: Color{1, 0, 0, 1}
+COLOR_GREEN :: Color{0, 1, 0, 1}
+COLOR_BLUE :: Color{0, 0, 1, 1}
+COLOR_YELLOW :: Color{1, 1, 0, 1}
+COLOR_CYAN :: Color{0, 1, 1, 1}
+COLOR_MAGENTA :: Color{1, 0, 1, 1}
+COLOR_TRANSPARENT :: Color{0, 0, 0, 0}
+
+Instance :: struct {
+    ptr: ObjectPtr,
+}
+
+@(private = "file")
+instance_method_start: MethodBindPtr = nil
+@(private = "file")
+instance_method_iteration: MethodBindPtr = nil
+
+init_core :: proc() {
+    instance_method_start = get_method_bind("GodotInstance", "start", 2240911060)
+    instance_method_iteration = get_method_bind("GodotInstance", "iteration", 2240911060)
+}
+
+instance_create :: proc(argc: c.int, argv: [^][^]u8, init_func: InitializationFunction) -> (Instance, bool) {
+    ptr := libgodot_create_godot_instance(argc, argv, init_func)
+    if ptr == nil {
+        return Instance{}, false
+    }
+    return Instance{ptr = ptr}, true
+}
+
+instance_destroy :: proc(instance: ^Instance) {
+    if instance.ptr == nil {
+        return
+    }
+    libgodot_destroy_godot_instance(instance.ptr)
+    instance.ptr = nil
+}
+
+instance_start :: proc(instance: ^Instance) -> bool {
+    if instance_method_start == nil {
+        return false
+    }
+    ret: u8 = 0
+    ptrcall(instance_method_start, instance.ptr, nil, cast(TypePtr)&ret)
+    return ret != 0
+}
+
+instance_iteration :: proc(instance: ^Instance) -> bool {
+    if instance_method_iteration == nil {
+        return false
+    }
+    ret: u8 = 0
+    ptrcall(instance_method_iteration, instance.ptr, nil, cast(TypePtr)&ret)
+    return ret != 0
+}
+
+@(private = "file")
+class_library: GDExtensionClassLibraryPtr = nil
+
+set_class_library :: proc(lib: ClassLibraryPtr) {
+    class_library = cast(GDExtensionClassLibraryPtr)lib
+}
+
+register_class :: proc(class_name, parent_name: cstring, info: ^GDExtensionClassCreationInfo4) {
+    cn := string_name_from_cstring(class_name)
+    pn := string_name_from_cstring(parent_name)
+    if gde_interface.classdb_register_extension_class5 != nil {
+        gde_interface.classdb_register_extension_class5(
+            class_library,
+            cast(GDExtensionConstStringNamePtr)&cn,
+            cast(GDExtensionConstStringNamePtr)&pn,
+            info,
+        )
+    }
+}
+
+object_set_instance :: proc(obj: ObjectPtr, class_name: cstring, instance: rawptr) {
+    cn := string_name_from_cstring(class_name)
+    if gde_interface.object_set_instance != nil {
+        gde_interface.object_set_instance(
+            cast(GDExtensionObjectPtr)obj,
+            cast(GDExtensionConstStringNamePtr)&cn,
+            cast(GDExtensionClassInstancePtr)instance,
+        )
+    }
+}
