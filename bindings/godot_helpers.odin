@@ -80,7 +80,7 @@ ptrcall :: proc(method: MethodBindPtr, obj: ObjectPtr, args: [^]ConstTypePtr, re
     )
 }
 
-construct_object :: proc(class_name: cstring) -> ObjectPtr {
+Object_construct :: proc(class_name: cstring) -> ObjectPtr {
     cn := string_name_from_cstring(class_name)
     defer destroy_string_name(&cn)
     assert(gde_interface.classdb_construct_object2 != nil, "[godot] classdb_construct_object2 not loaded")
@@ -184,11 +184,11 @@ instance_iteration :: proc(instance: ^Instance) -> bool {
 @(private = "file")
 class_library: GDExtensionClassLibraryPtr = nil
 
-set_class_library :: proc(lib: ClassLibraryPtr) {
+ClassLibrary_set :: proc(lib: ClassLibraryPtr) {
     class_library = cast(GDExtensionClassLibraryPtr)lib
 }
 
-register_class :: proc(class_name, parent_name: cstring, info: ^GDExtensionClassCreationInfo4) {
+Class_register :: proc(class_name, parent_name: cstring, info: ^GDExtensionClassCreationInfo4) {
     cn := string_name_from_cstring(class_name)
     defer destroy_string_name(&cn)
     pn := string_name_from_cstring(parent_name)
@@ -202,7 +202,123 @@ register_class :: proc(class_name, parent_name: cstring, info: ^GDExtensionClass
     )
 }
 
-object_set_instance :: proc(obj: ObjectPtr, class_name: cstring, instance: rawptr) {
+// Variant converters - cached function pointers
+
+@(private = "file")
+VARIANT_TYPE_COUNT :: int(GDExtensionVariantType.VARIANT_TYPE_VARIANT_MAX)
+
+@(private = "file")
+variant_from_type: [VARIANT_TYPE_COUNT]GDExtensionVariantFromTypeConstructorFunc
+@(private = "file")
+variant_to_type: [VARIANT_TYPE_COUNT]GDExtensionTypeFromVariantConstructorFunc
+
+init_variant_converters :: proc() {
+    for i in 1 ..< VARIANT_TYPE_COUNT {
+        variant_from_type[i] = gde_interface.get_variant_from_type_constructor(auto_cast i)
+        variant_to_type[i] = gde_interface.get_variant_to_type_constructor(auto_cast i)
+    }
+}
+
+// Low-level: construct a Variant from a typed pointer and variant type index.
+Variant_from_type_ptr :: proc(type_index: GDExtensionVariantType, ptr: rawptr) -> Variant {
+    v: Variant
+    variant_from_type[type_index](cast(GDExtensionUninitializedVariantPtr)&v, cast(GDExtensionTypePtr)ptr)
+    return v
+}
+
+Variant_from_int :: proc(val: i64) -> Variant {
+    tmp := val
+    return Variant_from_type_ptr(.VARIANT_TYPE_INT, &tmp)
+}
+
+Variant_from_float :: proc(val: f64) -> Variant {
+    tmp := val
+    return Variant_from_type_ptr(.VARIANT_TYPE_FLOAT, &tmp)
+}
+
+Variant_from_bool :: proc(val: bool) -> Variant {
+    tmp: u8 = 1 if val else 0
+    return Variant_from_type_ptr(.VARIANT_TYPE_BOOL, &tmp)
+}
+
+Variant_from_string :: proc(val: GodotString) -> Variant {
+    tmp := val
+    return Variant_from_type_ptr(.VARIANT_TYPE_STRING, &tmp)
+}
+
+Variant_from_string_name :: proc(val: StringName) -> Variant {
+    tmp := val
+    return Variant_from_type_ptr(.VARIANT_TYPE_STRING_NAME, &tmp)
+}
+
+Variant_from_object :: proc(obj: ObjectPtr) -> Variant {
+    tmp := obj
+    return Variant_from_type_ptr(.VARIANT_TYPE_OBJECT, &tmp)
+}
+
+@(private = "file")
+variant_to :: proc($T: typeid, type_index: GDExtensionVariantType, v: ^Variant) -> T {
+    ret: T
+    variant_to_type[type_index](cast(GDExtensionUninitializedTypePtr)&ret, cast(GDExtensionVariantPtr)v)
+    return ret
+}
+
+Variant_to_int :: proc(v: ^Variant) -> i64 {
+    return variant_to(i64, .VARIANT_TYPE_INT, v)
+}
+
+Variant_to_float :: proc(v: ^Variant) -> f64 {
+    return variant_to(f64, .VARIANT_TYPE_FLOAT, v)
+}
+
+Variant_to_bool :: proc(v: ^Variant) -> bool {
+    return variant_to(u8, .VARIANT_TYPE_BOOL, v) != 0
+}
+
+Variant_destroy :: proc(v: ^Variant) {
+    gde_interface.variant_destroy(cast(GDExtensionVariantPtr)v)
+}
+
+// Callable construction helper
+
+Callable_from_object_method :: proc(obj: ObjectPtr, method_name: cstring) -> Callable {
+    c_val: Callable
+    sn := string_name_from_cstring(method_name)
+    defer destroy_string_name(&sn)
+    obj_copy := obj
+    args: [2]GDExtensionConstTypePtr
+    args[0] = cast(GDExtensionConstTypePtr)&obj_copy
+    args[1] = cast(GDExtensionConstTypePtr)&sn
+    builtin_lifecycle.Callable_constructor_2(cast(GDExtensionUninitializedTypePtr)&c_val, &args[0])
+    return c_val
+}
+
+// Virtual method dispatch helpers
+
+VirtualEntry :: struct {
+    name:     cstring,
+    callback: GDExtensionClassCallVirtual,
+}
+
+virtual_match :: proc(name_ptr: GDExtensionConstStringNamePtr, name: cstring) -> bool {
+    sn := string_name_from_cstring(name)
+    defer destroy_string_name(&sn) // todo remove dynamic allocation from every virtual call lol
+    return (cast(^u64)name_ptr)^ == (cast(^u64)&sn)^
+}
+
+virtual_dispatch :: proc(entries: []VirtualEntry, name_ptr: GDExtensionConstStringNamePtr) -> GDExtensionClassCallVirtual {
+    // todo quick hash lookup
+    for &e in entries {
+        if virtual_match(name_ptr, e.name) {
+            return e.callback
+        }
+    }
+    return nil
+}
+
+// Class instance setup
+
+Object_set_instance :: proc(obj: ObjectPtr, class_name: cstring, instance: rawptr) {
     cn := string_name_from_cstring(class_name)
     defer destroy_string_name(&cn)
     assert(gde_interface.object_set_instance != nil, "[godot] object_set_instance not loaded")
