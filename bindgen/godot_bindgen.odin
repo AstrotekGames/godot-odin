@@ -838,24 +838,24 @@ generate_class_constants :: proc(g: ^Generator, api: ^Extension_API) {
 }
 
 generate_class_name_strings :: proc(g: ^Generator, api: ^Extension_API) {
-    write_section_header(g, "CLASS NAME STRINGS (cached at init_class_names)")
+    write_section_header(g, "CLASS NAME CONSTANTS (cstring, compile-time)")
 
-    writeln(g, "@(private)")
-    writeln(g, "ClassNameStrings :: struct {")
-    g.indent += 1
     for &cls in api.classes {
-        writef(g, "%s: GodotString,\n", cls.name)
+        writef(g, "type_%s_cstr :: \"%s\"\n", cls.name, cls.name)
     }
-    g.indent -= 1
-    writeln(g, "}")
     writeln(g)
-    writeln(g, "types: ClassNameStrings")
+
+    write_section_header(g, "CLASS NAME STRINGS (GodotString, cached at init_class_names)")
+
+    for &cls in api.classes {
+        writef(g, "type_%s_gstr: GodotString\n", cls.name)
+    }
     writeln(g)
 
     writeln(g, "init_class_names :: proc() {")
     g.indent += 1
     for &cls in api.classes {
-        writef(g, "types.%s = godot_string_from_cstring(\"%s\")\n", cls.name, cls.name)
+        writef(g, "type_%s_gstr = godot_string_from_cstring(\"%s\")\n", cls.name, cls.name)
     }
     g.indent -= 1
     writeln(g, "}")

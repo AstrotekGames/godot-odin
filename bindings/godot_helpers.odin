@@ -1,6 +1,7 @@
 package godot
 
 import "core:c"
+import "base:runtime"
 
 // String lifecycle
 
@@ -332,20 +333,66 @@ VirtualEntry :: struct {
     callback: GDExtensionClassCallVirtual,
 }
 
-virtual_match :: proc(name_ptr: GDExtensionConstStringNamePtr, name: cstring) -> bool {
-    sn := string_name_from_cstring(name)
-    defer destroy_string_name(&sn) // todo remove dynamic allocation from every virtual call lol
-    return (cast(^u64)name_ptr)^ == (cast(^u64)&sn)^
+MAX_VIRTUALS_PER_CLASS :: 128
+MAX_VIRTUAL_CLASSES :: 512
+
+@(private = "file")
+ResolvedVirtual :: struct {
+    sn:       StringName,
+    callback: GDExtensionClassCallVirtual,
 }
 
-virtual_dispatch :: proc(entries: []VirtualEntry, name_ptr: GDExtensionConstStringNamePtr) -> GDExtensionClassCallVirtual {
-    // todo quick hash lookup
-    for &e in entries {
-        if virtual_match(name_ptr, e.name) {
-            return e.callback
+@(private = "file")
+VirtualClassEntry :: struct {
+    key:     rawptr,
+    entries: [MAX_VIRTUALS_PER_CLASS]ResolvedVirtual,
+    count:   int,
+}
+
+@(private = "file")
+registered_virtuals: [MAX_VIRTUAL_CLASSES]VirtualClassEntry
+@(private = "file")
+registered_virtuals_count: int = 0
+
+@(private = "file")
+default_get_virtual :: proc "c" (class_userdata: rawptr, name_ptr: GDExtensionConstStringNamePtr, _hash: u32) -> GDExtensionClassCallVirtual {
+    context = runtime.default_context()
+
+    // todo quick table lookup
+    for i in 0..<registered_virtuals_count {
+        if registered_virtuals[i].key == class_userdata {
+            cls := &registered_virtuals[i]
+            for j in 0..<cls.count {
+                if (cast(^u64)name_ptr)^ == (cast(^u64)&cls.entries[j].sn)^ {
+                    return cls.entries[j].callback
+                }
+            }
+            return nil
         }
     }
     return nil
+}
+
+Class_register_virtual :: proc(class_name, parent_name: cstring, info: ^GDExtensionClassCreationInfo4, virtuals: ..VirtualEntry) {
+    if len(virtuals) > 0 {
+        assert(info.get_virtual_func == nil, "[godot] get_virtual_func already set, don't pass virtuals and set get_virtual_func manually")
+        assert(info.class_userdata == nil, "[godot] class_userdata already set, Class_register_virtual uses class_userdata internally for virtual dispatch")
+        assert(registered_virtuals_count < MAX_VIRTUAL_CLASSES, "[godot] too many registered virtual classes")
+        assert(len(virtuals) <= MAX_VIRTUALS_PER_CLASS, "[godot] too many virtuals for one class")
+        
+        info.class_userdata = cast(rawptr)info
+        cls := &registered_virtuals[registered_virtuals_count]
+        cls.key = cast(rawptr)info
+        cls.count = len(virtuals)
+        for e, i in virtuals {
+            cls.entries[i] = { sn = string_name_from_cstring(e.name), callback = e.callback }
+        }
+
+        registered_virtuals_count += 1
+        info.get_virtual_func = default_get_virtual
+    }
+
+    Class_register(class_name, parent_name, info)
 }
 
 // Class instance setup
